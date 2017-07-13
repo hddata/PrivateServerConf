@@ -1,0 +1,82 @@
+#docker build -t apache_php_nginx_git:v1.0 .
+#docker run --net TiekaaNet --ip 172.19.0.10 -p 443:443  -p 80:80 -p 3306:3306  -v /tiekaa/products:/tiekaa/products  -it apache_php_nginx_git:v1.0 bash
+
+#docker run --net TiekaaNet --ip 172.19.0.10 -it -P apache_php_nginx_git:v1.0 bash
+
+#生产：create database tiekaa CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#生产：docker tag tiekaa/apache_php_nginx_git:v1.0 apache_php_nginx_git:v1.0 
+#生产：docker run --net TiekaaNet --ip 172.19.0.10 -p 443:443 -p 80:80 -p 8080:8080  -v /tiekaa/products:/tiekaa/products -v /tiekaa/tiekaabk:/tiekaa/tiekaabk -v /tiekaa/webserver/tiekaa:/tiekaa/webserver/tiekaa -it apache_php_nginx_git:v1.0 bash
+
+FROM centos
+
+RUN mkdir -p /tiekaa/products
+COPY * /tiekaa/products/
+#COPY<src>文件必须和dockerfile在一个目录下
+RUN mkdir -p /tiekaa/webserver/component/apr \
+ && mkdir -p /tiekaa/webserver/component/apr-util \
+ && mkdir -p /tiekaa/webserver/component/pcre \
+ && mkdir -p /tiekaa/webserver/apache
+
+#apache/php/git以\做区分
+RUN yum -y install wget make gcc gcc-c++ build-essential libtool nghttp2 libnghttp2-devel \
+ libxml2 libxml2-devel bzip2 bzip2-devel curl curl-devel libjpeg-devel libpng-devel freetype-devel libmcrypt libmcrypt-devel \
+ perl-ExtUtils-Embed tcl  build-essential tk gettext \
+ && yum clean all 
+
+
+#apache穿插nginx
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/apr-1.5.2.tar.gz -C /tiekaa/products && sed -i "s/RM='\$RM'/RM='\$RM -f'/g" /tiekaa/products/apr-1.5.2/configure && cd /tiekaa/products/apr-1.5.2 && ./configure --prefix=/tiekaa/webserver/component/apr && make && make install && rm -rf /tiekaa/products/apr-1.5.2
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/apr-util-1.5.4.tar.gz  -C /tiekaa/products && cd /tiekaa/products/apr-util-1.5.4 && ./configure --prefix=/tiekaa/webserver/component/apr-util --with-apr=/tiekaa/webserver/component/apr && make && make install && rm -rf /tiekaa/products/apr-util-1.5.4
+
+
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/nghttp2-1.23.1.tar.gz  -C /tiekaa/products && cd /tiekaa/products/nghttp2-1.23.1 && ./configure --prefix=/tiekaa/webserver/component/nghttp2 && make && make install && rm -rf /tiekaa/products/nghttp2-1.23.1
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/pcre-8.40.tar.gz -C /tiekaa/products && cd /tiekaa/products/pcre-8.40 && ./configure --prefix=/tiekaa/webserver/component/pcre && make && make install  \
+&& tar -zxvf /tiekaa/products/openssl-fips-2.0.16.tar.gz  -C /tiekaa/products && cd /tiekaa/products/openssl-fips-2.0.16 && ./config --prefix=/tiekaa/webserver/component/openssl-fips && make && make install \
+&& tar -zxvf /tiekaa/products/openssl-1.0.2l.tar.gz  -C /tiekaa/products && cd /tiekaa/products/openssl-1.0.2l && ./config --prefix=/tiekaa/webserver/component/openssl -fPIC no-gost no-shared no-zlib && make && make install \
+&& cd /tiekaa/products/openssl-1.0.2l && ./config fips --with-fipsdir=/tiekaa/webserver/component/openssl-fips --prefix=/tiekaa/webserver/component/openssl -fPIC no-gost no-shared no-zlib && make clean && make && make install \
+&& ln -s /tiekaa/webserver/component/openssl/bin/openssl  /usr/bin/openssl \
+&& echo "/tiekaa/webserver/component/openssl/lib" >> /etc/ld.so.conf \
+&& tar -zxvf /tiekaa/products/nginx-1.13.1.tar.gz  -C /tiekaa/products && cd /tiekaa/products/nginx-1.13.1 && ./configure --prefix=/tiekaa/webserver/nginx  --with-pcre=/tiekaa/products/pcre-8.40 --with-openssl=/tiekaa/products/openssl-1.0.2l --with-http_stub_status_module --with-http_ssl_module  --with-http_v2_module && make && make install \
+&& \cp /tiekaa/products/nginx.conf /tiekaa/webserver/nginx/conf/ \
+&& \cp /tiekaa/products/naproxy.conf /tiekaa/webserver/nginx/conf/ \
+&& rm -rf /tiekaa/products/nginx-1.13.1 && rm -rf /tiekaa/products/openssl-fips-2.0.16 && rm -rf /tiekaa/products/openssl-1.0.2l && rm -rf /tiekaa/products/pcre-8.40 
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/httpd-2.4.25.tar.gz  -C /tiekaa/products && cd /tiekaa/products/httpd-2.4.25 && ./configure --prefix=/tiekaa/webserver/apache --with-apr=/tiekaa/webserver/component/apr --with-apr-util=/tiekaa/webserver/component/apr-util --with-pcre=/tiekaa/webserver/component/pcre --enable-so --enable-rewrite --with-ssl=/tiekaa/webserver/component/openssl --enable-ssl --with-nghttp2=/tiekaa/webserver/component/nghttp2 --enable-http2 --enable-nghttp2-staticlib-deps && make && make install && rm -rf /tiekaa/products/httpd-2.4.25 
+
+RUN cp /tiekaa/products/apache.service /usr/lib/systemd/system/ && chmod 754 /usr/lib/systemd/system/apache.service
+
+#php
+RUN set -o pipefail && tar -zxvf /tiekaa/products/libmcrypt-2.5.7.tar.gz  -C /tiekaa/products && cd /tiekaa/products/libmcrypt-2.5.7 && ./configure && make && make install && rm -rf libmcrypt-2.5.7
+
+RUN set -o pipefail && tar -zxvf /tiekaa/products/php-7.1.6.tar.gz  -C /tiekaa/products && cd /tiekaa/products/php-7.1.6 && ./configure --prefix=/tiekaa/webserver/php --with-apxs2=/tiekaa/webserver/apache/bin/apxs --with-libxml-dir --with-config-file-path=/tiekaa/webserver/apache/conf --with-pdo-mysql --with-mysqli --with-gd --enable-gd-native-ttf --with-zlib --with-mcrypt --with-pdo-mysql --enable-shmop --enable-soap --enable-sockets --enable-wddx --enable-zip --with-xmlrpc --enable-fpm --enable-mbstring --with-zlib-dir --with-bz2 --with-curl --enable-exif --enable-ftp --with-jpeg-dir=/usr/lib --with-png-dir=/usr/lib --with-freetype-dir=/usr/lib/ --disable-fileinfo --with-openssl=/tiekaa/webserver/component/openssl --with-openssl-dir=/tiekaa/webserver/component/openssl --without-pear  --disable-phar && make && make install && cp /tiekaa/products/php-7.1.6/sapi/fpm/php-fpm /tiekaa/webserver/php/bin && cp /tiekaa/products/php-7.1.6/php.ini-production /tiekaa/webserver/php/etc/ && cd /tiekaa/webserver/php/etc/ && cat php.ini-production |grep -v ^';' | grep -v "^$"  > php.ini && sed -i "s/post_max_size =.*/post_max_size = 40M/g" /tiekaa/webserver/php/etc/php.ini && sed -i "s/upload_max_filesize =.*/upload_max_filesize = 10M/g" /tiekaa/webserver/php/etc/php.ini && cat /tiekaa/webserver/php/etc/php-fpm.d/www.conf.default |grep -v ^';' | grep -v "^$" > /tiekaa/webserver/php/etc/php-fpm.conf && rm -rf /tiekaa/products/php-7.1.6
+
+
+
+
+#git
+RUN set -o pipefail && tar -zxvf /tiekaa/products/git-2.13.1.tar.gz  -C /tiekaa/products && cd /tiekaa/products/git-2.13.1 && ./configure --prefix=/tiekaa/webserver/git && make && make install && rm -rf /tiekaa/products/git-2.13.1
+#RUN /tiekaa/webserver/git/bin/git clone -b tiekaadp https://github.com/hddata/Tiekaa.git /tiekaa/webserver/tiekaa
+#RUN chmod -R 777 /tiekaa/webserver/tiekaa
+
+
+#let't encrypt
+RUN /tiekaa/webserver/git/bin/git clone https://github.com/certbot/certbot /tiekaa/webserver/component/certbot && cd /tiekaa/webserver/component/certbot && /tiekaa/webserver/component/certbot/certbot-auto -n -v || : && yum clean all 
+
+#/tiekaa/webserver/component/certbot/certbot-auto -n -v --os-packages-only
+
+
+#clear env
+RUN rm -rf /tiekaa/products/* 
+
+expose 22
+expose 80
+expose 3306
+expose 8080
+
+#Startup Server
+#CMD /tiekaa/webserver/php/bin/php-fpm
+#CMD /tiekaa/webserver/nginx/sbin/nginx
